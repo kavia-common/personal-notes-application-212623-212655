@@ -1,84 +1,80 @@
 //
-// Simple API client using fetch with Authorization handling and base URL from env
+// Simple API client for the Notes frontend.
+// Reads base URL from REACT_APP_API_BASE and attaches Authorization header if a JWT is present.
 //
-
-const DEFAULT_BASE = 'http://localhost:3001';
 
 // PUBLIC_INTERFACE
 export function getApiBase() {
-  /** Returns the API base URL from environment or falls back to localhost. */
-  return process.env.REACT_APP_API_BASE || DEFAULT_BASE;
+  /** Return the API base URL from env (REACT_APP_API_BASE). */
+  const base = process.env.REACT_APP_API_BASE;
+  if (!base) {
+    // Fail fast in development to avoid silent misconfigurations
+    // eslint-disable-next-line no-console
+    console.warn("REACT_APP_API_BASE is not set. Falling back to http://localhost:3001");
+  }
+  return base || "http://localhost:3001";
 }
 
 // PUBLIC_INTERFACE
-export async function apiRequest(path, { method = 'GET', body, token, headers = {}, signal } = {}) {
-  /** Performs an HTTP request to the backend API with JSON handling and optional Bearer token.
-   * path: string - resource path starting with '/'
-   * method: HTTP method
-   * body: object for JSON payload
-   * token: JWT token for Authorization header
-   * headers: additional headers
-   * signal: AbortSignal for cancellation
-   * Returns: { data, status } or throws Error with message and status
+export async function apiRequest(path, { method = "GET", body, headers = {}, auth = true } = {}) {
+  /**
+   * Perform a fetch call to the backend.
+   * - path: string path starting with "/"
+   * - method: HTTP method
+   * - body: object or string; object will be JSON-stringified and content-type set
+   * - headers: extra headers to include
+   * - auth: when true, adds Authorization: Bearer <token> if token exists in localStorage
    */
-  const url = `${getApiBase()}${path}`;
-  const reqHeaders = {
-    'Content-Type': 'application/json',
-    ...headers,
-  };
-  if (token) {
-    reqHeaders.Authorization = `Bearer ${token}`;
+  const base = getApiBase();
+  const url = `${base}${path.startsWith("/") ? path : `/${path}`}`;
+
+  const finalHeaders = { ...headers };
+  if (body && typeof body === "object" && !(body instanceof FormData)) {
+    finalHeaders["Content-Type"] = "application/json";
+    // eslint-disable-next-line no-param-reassign
+    body = JSON.stringify(body);
+  }
+
+  if (auth) {
+    const token = window.localStorage.getItem("access_token");
+    if (token) {
+      finalHeaders.Authorization = `Bearer ${token}`;
+    }
   }
 
   const res = await fetch(url, {
     method,
-    headers: reqHeaders,
-    body: body ? JSON.stringify(body) : undefined,
-    signal,
-    credentials: 'include',
-    mode: 'cors',
+    headers: finalHeaders,
+    body,
+    credentials: "include",
   });
 
-  const contentType = res.headers.get('content-type') || '';
-  let payload = null;
-  if (contentType.includes('application/json')) {
-    payload = await res.json().catch(() => null);
+  // Try to parse JSON; if it fails, throw a generic error
+  let data;
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    data = await res.json();
   } else {
-    payload = await res.text().catch(() => null);
+    data = await res.text();
   }
 
   if (!res.ok) {
-    const message = (payload && (payload.detail || payload.message)) || `Request failed: ${res.status}`;
-    const err = new Error(message);
-    err.status = res.status;
-    err.payload = payload;
-    throw err;
+    const message = (data && data.detail) || (typeof data === "string" ? data : "Request failed");
+    const error = new Error(message);
+    error.status = res.status;
+    error.data = data;
+    throw error;
   }
 
-  return { data: payload, status: res.status };
+  return data;
 }
 
 // PUBLIC_INTERFACE
-export const api = {
-  // Auth endpoints
-  login: (email, password) => apiRequest('/auth/login', { method: 'POST', body: { email, password } }),
-  register: (email, password) => apiRequest('/auth/register', { method: 'POST', body: { email, password } }),
-  me: (token) => apiRequest('/auth/me', { method: 'GET', token }),
-
-  // Notes CRUD
-  listNotes: ({ q, tag, page = 1, pageSize = 10 } = {}, token) => {
-    const params = new URLSearchParams();
-    if (q) params.set('q', q);
-    if (tag) params.set('tag', tag);
-    if (page) params.set('page', String(page));
-    if (pageSize) params.set('pageSize', String(pageSize));
-    const qs = params.toString() ? `?${params.toString()}` : '';
-    return apiRequest(`/notes${qs}`, { method: 'GET', token });
-  },
-  getNote: (id, token) => apiRequest(`/notes/${encodeURIComponent(id)}`, { method: 'GET', token }),
-  createNote: (note, token) => apiRequest('/notes', { method: 'POST', body: note }, { token }),
-  updateNote: (id, note, token) => apiRequest(`/notes/${encodeURIComponent(id)}`, { method: 'PUT', body: note, token }),
-  deleteNote: (id, token) => apiRequest(`/notes/${encodeURIComponent(id)}`, { method: 'DELETE', token }),
-};
-
-export default api;
+export function setAccessToken(token) {
+  /** Persist JWT to localStorage for subsequent authorized requests. */
+  if (token) {
+    window.localStorage.setItem("access_token", token);
+  } else {
+    window.localStorage.removeItem("access_token");
+  }
+}
